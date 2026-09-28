@@ -1,4 +1,208 @@
-# openpi
+# vla_distill: distilling π₀.₅ (LIBERO) with Shallow-π
+
+This repository runs a small-budget, controlled experiment: take the official **π₀.₅ LIBERO** checkpoint
+(`gs://openpi-assets/checkpoints/pi05_libero`) as the teacher and distill it into a **6-layer student**
+(18 → 6 transformer layers in both the PaliGemma VLM backbone and the action expert) using
+**Shallow-π** ([arXiv 2601.20262](https://arxiv.org/abs/2601.20262), "Knowledge Distillation for Flow-based VLAs").
+The goal is the *comparison*, not the student's absolute score: every model (teacher, untrained student,
+distilled student, task-loss-only control) is measured with identical, paired LIBERO rollouts, the same
+latency/memory benchmark and the same offline action-agreement metric.
+
+| Phase | Where | What |
+|---|---|---|
+| 1 (this log's first entry) | laptop, RTX 5080 Laptop 16 GB, free | setup, teacher baseline, untrained 6-layer student, training-step readiness |
+| 2 | one rented GPU | short distillation run + no-distillation-loss control |
+| 3 | laptop | evaluate every model identically, write the comparison report |
+
+**Lineage and license.** The code base is a snapshot (no history) of
+[icsl-Jeon/openpi](https://github.com/icsl-Jeon/openpi) at commit
+`a5940ac510c7f5d94918f238cfc3722be1a2c5c8` ("Add distillation code", 2026-01-29), the Shallow-π authors'
+fork of [Physical-Intelligence/openpi](https://github.com/Physical-Intelligence/openpi). Apache-2.0
+([LICENSE](LICENSE)); Gemma weights are subject to [LICENSE_GEMMA.txt](LICENSE_GEMMA.txt). The upstream README
+follows unchanged after the experiment log. Submodules `third_party/libero` and `third_party/aloha` are
+pinned to the same commits as upstream.
+
+## How to reproduce (laptop)
+
+```bash
+git submodule update --init --recursive
+source scripts/phase1/env.sh                 # user-local gcc, clean PATH, EGL, LIBERO config (see file)
+uv sync                                      # Python 3.11 env; torch 2.7.1+cu128 (see "Deviations")
+cp -r src/openpi/models_pytorch/transformers_replace/* .venv/lib/python3.11/site-packages/transformers/
+scripts/phase1/setup_libero_client.sh        # Python 3.8 LIBERO sim-client venv
+
+# teacher: official JAX checkpoint -> PyTorch with openpi's converter
+uv run examples/convert_jax_model_to_pytorch.py --config_name pi05_libero \
+  --checkpoint_dir ~/.cache/openpi/openpi-assets/checkpoints/pi05_libero \
+  --output_path checkpoints/pi05_libero_pytorch --precision bfloat16
+cp -r ~/.cache/openpi/openpi-assets/checkpoints/pi05_libero/assets checkpoints/pi05_libero_pytorch/
+# untrained student: teacher layers [0,3,7,10,14,17] in backbone and action expert
+uv run scripts/phase1/make_student_init.py      # -> checkpoints/pi05_libero_l06_init
+
+scripts/phase1/collect_heldout_frames.sh        # once: 457 held-out frames for action agreement
+# the same four commands for every model (MODEL_ID CONFIG CHECKPOINT):
+scripts/phase1/eval_libero.sh      teacher_l18 pi05_libero checkpoints/pi05_libero_pytorch
+uv run scripts/phase1/bench_model.py       --model-id teacher_l18 --config pi05_libero --checkpoint-dir checkpoints/pi05_libero_pytorch
+uv run scripts/phase1/action_agreement.py  --model-id teacher_l18 --config pi05_libero --checkpoint-dir checkpoints/pi05_libero_pytorch
+uv run scripts/phase1/make_summary.py      --models teacher_l18 student_l06_init   # -> results/phase1/SUMMARY.md
+scripts/phase1/distill_smoke.sh pi05_libero_l06 2 10    # distillation-step readiness check (see log)
+```
+
+Model identities used in `results/`: `teacher_l18` (config `pi05_libero`), `student_l06_init`
+(config `pi05_libero_l06`, layer-mapped teacher weights, 0 training steps), and for phase 2
+`student_l06_kd` (config `pi05_libero_l06`: task + teacher-velocity loss) and `student_l06_taskonly`
+(config `pi05_libero_l06_taskonly`: identical but `loss_weight_teacher=0`).
+
+## Experiment log
+
+### 2026-09-27 — Phase 1: laptop setup, teacher baseline, untrained 6-layer student, training readiness
+
+**Environment.** Windows 11 + WSL2 Ubuntu 24.04.3 (kernel 6.6.87.2), no sudo; RTX 5080 Laptop GPU 16 GB
+(sm_120), NVIDIA driver 616.92 (nvidia-smi 615.71.08, CUDA UMD 13.4); 16 CPU threads, 31 GB RAM.
+Python 3.11.16 (`.venv`, uv 0.12.19): torch 2.7.1+cu128, CUDA 12.8, cuDNN 9.7.1, transformers 4.53.2
+(+ openpi `transformers_replace`), jax 0.5.3 (CPU only, conversion). LIBERO client: Python 3.8, mujoco
+3.2.3, robosuite 1.4.1, torch 1.11.0+cpu. Toolchain: conda-forge gcc 13.4 (micromamba env `vla-tools`).
+
+**What ran** (all raw outputs under `results/phase1/`, rendered table in
+[`results/phase1/SUMMARY.md`](results/phase1/SUMMARY.md)):
+
+| | Teacher `teacher_l18` (π₀.₅ LIBERO, 18+18 layers) | Student `student_l06_init` (6+6 layers, no training) |
+|---|---|---|
+| LIBERO success, overall (400 paired episodes) | **96.0%** [93.6, 97.5] | **0.0%** [0.0, 1.0] |
+| spatial / object / goal / libero_10 | 98 / 97 / 96 / 93 | 0 / 0 / 0 / 0 (every episode hits the step limit) |
+| Latency per action chunk, p50 / p95 (laptop) | 145.7 / 155.5 ms | 58.6 / 61.0 ms (**2.5× faster**) |
+| Peak GPU memory, inference (allocated) | 6.97 GiB | 3.84 GiB |
+| Parameters total (used at inference) | 3,617M (3,353M) | 2,012M (1,749M) |
+| Transformer layers: VLM backbone / action expert | 1,982M / 430M | 661M / 147M (−67%) |
+| Action MSE vs teacher on 457 held-out frames | 0 (reference) | 0.181 [0.167, 0.195] |
+
+Reading the numbers: the teacher reproduces the published π₀.₅ LIBERO result (paper Table 2: 96; openpi:
+96.85 at 50 trials/task) on this laptop through the PyTorch path. The teacher's own sampling-noise floor for action MSE
+(same frames, different noise seeds) is 0.0086, so the untrained student's actions are about 21× further from the
+teacher than the teacher is from itself, and its gripper open/close sign agrees only 71% of the time. **Cutting layers
+alone destroys the policy (96% → 0%)**; all of the student's competence has to come from training. That is what
+phase 2 measures, with and without the distillation loss. The unchanged SigLIP encoder (415M) and the 527M-parameter
+token embedding (a lookup, almost no compute) are why the total only drops 44% while the latency drops 60%.
+
+**Commands** (exact; see "How to reproduce" for setup):
+```bash
+scripts/phase1/collect_heldout_frames.sh
+scripts/phase1/eval_libero.sh teacher_l18      pi05_libero     checkpoints/pi05_libero_pytorch
+scripts/phase1/eval_libero.sh student_l06_init pi05_libero_l06 checkpoints/pi05_libero_l06_init
+.venv/bin/python scripts/phase1/bench_model.py --model-id teacher_l18      --config pi05_libero     --checkpoint-dir checkpoints/pi05_libero_pytorch
+.venv/bin/python scripts/phase1/bench_model.py --model-id student_l06_init --config pi05_libero_l06 --checkpoint-dir checkpoints/pi05_libero_l06_init
+.venv/bin/python scripts/phase1/action_agreement.py --model-id teacher_l18 --config pi05_libero --checkpoint-dir checkpoints/pi05_libero_pytorch
+.venv/bin/python scripts/phase1/action_agreement.py --model-id teacher_l18_othernoise --config pi05_libero --checkpoint-dir checkpoints/pi05_libero_pytorch \
+    --noise-seed-offset 1000000007 --reference results/phase1/action_agreement/teacher_l18_actions.npz
+.venv/bin/python scripts/phase1/action_agreement.py --model-id student_l06_init --config pi05_libero_l06 --checkpoint-dir checkpoints/pi05_libero_l06_init \
+    --reference results/phase1/action_agreement/teacher_l18_actions.npz
+scripts/phase1/distill_smoke.sh pi05_libero_l06 2 10        # run A (fails at AdamW, see below)
+FREEZE_EXTRA="paligemma_with_expert.paligemma.model.language_model.layers. paligemma_with_expert.paligemma.model.language_model.norm. paligemma_with_expert.gemma_expert.lm_head." \
+  scripts/phase1/distill_smoke.sh pi05_libero_l06 2 10       # run B; run C: same with "8 20"
+.venv/bin/python scripts/phase1/make_summary.py --models teacher_l18 student_l06_init
+```
+Wall-clock on the laptop: teacher eval 57 min, untrained-student eval 1 h 43 min (all episodes run to the step limit), each
+benchmark / agreement run 2-4 min, teacher conversion 3 min.
+
+**Evaluation protocol (identical for every model).** openpi's LIBERO example (policy server + sim client),
+4 suites × 10 tasks × 10 trials = 400 episodes/model; init states 0-9 of each task, env seed 7, replan every
+5 actions of the 10-action chunk, 10 flow-matching denoising steps, 224 px inputs, per-suite step limits
+220/280/300/520. The flow-matching noise for query *q* of episode *e* of task *t* is drawn from a fixed seed, so
+all models see the same noise at the same point (`scripts/phase1/serve_policy_seeded.py`). Per-episode JSON
+(suite, task, init-state index, seed, noise seed, success, steps, errors) is in
+`results/phase1/libero/<model>/episodes/`, and `summary.json` has per-suite / overall rates with Wilson 95% CIs. Held-out
+frames for action agreement: 457 policy inputs recorded from teacher rollouts on init state 40 (never used by
+the success evaluation), every 3rd query, sha256 in `results/phase1/heldout_frames.json`. The frames file itself
+(`data/phase1/heldout_frames.npz`, gitignored) is rebuilt by `collect_heldout_frames.sh`.
+
+**Fixes to the Shallow-π fork (needed before paying for phase 2).**
+1. *Layer mapping only applied to the action expert.* The fork's init loop calls
+   `k.startswith(expert_prefix, k.startswith(backbone_prefix))`; the second argument is `startswith`'s
+   *start index* (a bool), so backbone keys never matched and the VLM backbone silently kept teacher layers
+   0-5 instead of the uniform subsample [0, 3, 7, 10, 14, 17] the paper describes (TinyBERT-style, both
+   components). Fixed in one shared helper, `src/openpi/models_pytorch/layer_mapping.py`, used by both
+   `scripts/distill_pytorch.py` and `make_student_init.py`. Measured effect at init: action MSE vs teacher
+   0.181 (corrected) vs 0.266 (fork's mapping), gripper-sign agreement 71% vs 49%
+   (`results/phase1/action_agreement/student_l06_init_forkmapping.json`).
+2. *Teacher and student saw different augmentations.* `DistilledPI0Pytorch.forward` and the teacher's
+   `eval_model` each re-ran the random crop/rotate/color-jitter preprocessing, so the teacher-velocity target
+   was computed on a different image than the student's input. The teacher now reuses the student's
+   preprocessed inputs.
+3. *Loss weights were ignored.* `DistilledPi0Config.loss_weight_gt/teacher` existed but the loss was a fixed
+   sum. They are now applied, and `loss_weight_teacher=0` skips the teacher forward. That is the phase-2
+   control config `pi05_libero_l06_taskonly`.
+4. Added `pytorch_freeze_prefixes` (TrainConfig) and `data.lerobot_episodes` (a LeRobot episode subset),
+   both used only by the laptop smoke test.
+
+**Deviations from the paper's setup** (the same for every model, so the comparison stays paired):
+- *Attention-distillation loss not implemented.* The released `distill_pytorch.py` has only task + teacher-velocity
+  loss; the paper's third loss (KL on action→vision-language attention at a middle layer) is missing. Paper
+  ablation at L6: task only 93.0, +KD 93.9, +KD+attention 94.6. Phase 2 therefore distills with two of the three
+  losses unless someone decides to implement the third one first.
+- *Evaluation budget.* 10 trials per task (400 per model) instead of the usual 50 (2000). At p≈0.96 the Wilson
+  95% CI half-width is about ±2 points overall and ±4 points per suite. Paired rollouts (identical init states 0-9, env seed 7 and
+  per-query noise seeds) plus an exact McNemar test on discordant episodes make the teacher/student
+  comparison much tighter than two independent CIs would suggest.
+- *Evaluation client changes vs `examples/libero/main.py`.* Rollout logic is unchanged (224 px resize-with-pad,
+  10 wait steps, replan every 5 actions, same per-suite max steps). Each task is self-seeded so tasks run in
+  4 parallel workers, and every policy query carries a deterministic noise seed.
+- *Precision.* All inference is bf16 (openpi's default conversion). The fork's `pi0_libero_l06` config trains
+  in fp32; the laptop smoke test uses bf16 (an fp32 teacher alone is 14.5 GB).
+- *Latency is laptop latency.* The paper's 25.5 ms (teacher) / 11.3 ms (L6) are on a data-center GPU. Here the
+  GPU is a 92 W laptop part shared with the Windows desktop (about 3.3 GB VRAM and some compute are always in use),
+  running upstream's `torch.compile(mode="max-autotune")` with eager attention (3 graphs, a few graph breaks
+  inside transformers). Compare the teacher/student *ratio*, not absolute milliseconds.
+- *Environment.* torch 2.7.1 **cu128** wheel instead of PyPI's cu126 build (no sm_120 kernels; the same torch
+  version, only the CUDA build changed). The uv.lock diff is large because uv 0.12 rewrites the lock format.
+  There is no system compiler, so gcc 13 / kernel headers / libxcrypt come from a user-local micromamba env
+  (`vla-tools`), which evdev (via lerobot→pynput), Triton and the LIBERO client's sdists need. The LIBERO client
+  installs the CPU build of torch 1.11 (it only `torch.load`s init states). MuJoCo renders with EGL on Mesa
+  llvmpipe (software): the GPU d3d12 Mesa driver hangs creating a MuJoCo context under WSL2 (two attempts)
+  and osmesa is not installed. Software rendering gives about 4.5 env steps/s per process, about 18/s with 4 workers.
+- *Converter quirk.* `convert_jax_model_to_pytorch.py` copies `assets/` from the checkpoint's parent directory,
+  so the norm stats must be copied by hand (see the reproduce block above). Peak host RAM during conversion was 28.8 GB of 31 GB.
+
+**Training readiness (phase 2) — measured on the laptop** (`results/phase1/train_smoke/distill_smoke.json`):
+- Real `scripts/distill_pytorch.py` steps on `pi05_libero_l06` (bf16, gradient checkpointing, vision tower +
+  token embedding frozen, 8 LIBERO episodes): teacher load, layer-mapped student init, data pipeline with the
+  teacher's norm stats, forward + teacher forward + backward all run. Model creation (teacher + student on the GPU) takes
+  11.6 GB.
+- With the 6 student VLM layers trainable (1.07 B trainable), batch 2 reaches **13.5 GB peak** after backward
+  and then fails in the first AdamW step with `RuntimeError: CUDA driver error: device not ready` (WSL2's way
+  of reporting GPU OOM; only about 12.9 GB of the 16 GB is usable next to the Windows desktop).
+- With the VLM backbone frozen too (147 M trainable, action expert only), the full loop works: 10 steps at
+  batch 2 (0.7 s/step, peak 13.3 GB) and 20 steps at batch 8 (**2.3 s/step, 0.29 s/sample, peak 15.0 GB**), plus checkpoint
+  save. The saved checkpoint reloads through `create_trained_policy` and produces (10, 7) action chunks, so
+  phase-2 outputs drop straight into the phase-3 evaluation commands.
+
+**Phase-2 resource estimate** (full student trainable, batch 64 as in the paper; 1 epoch = 4,273 steps):
+- Compute per training sample ≈ teacher forward 4.5 TFLOP (3×256 image tokens + 200 text tokens through
+  SigLIP + 18 Gemma-2B layers) + student forward 1.9 + backward 3.8 + checkpoint recompute 1.9 ≈ **12 TFLOP**,
+  i.e. ≈ 0.77 PFLOP per batch-64 step (the task-only control skips the teacher: ≈ 7.5 TFLOP/sample).
+  Laptop calibration: the frozen-VLM smoke step does ≈ 6.5 TFLOP/sample in 0.29 s ≈ 22 TFLOP/s effective.
+- Throughput assumed at ~30-40% bf16 utilization with eager attention: **1× H100 80GB ≈ 2-2.6 s/step**,
+  1× A100 80GB ≈ 5-6.5 s/step; the fork's fp32 (TF32) setting would be roughly 1.5-2× slower.
+- GPU memory, bf16, full student trainable: teacher 7.5 GB + student weights 4.1 + grads 4.1 +
+  AdamW states 8.2 ≈ 24 GB static, plus activations (with gradient checkpointing, estimated 0.3-0.5 GB/sample → 20-30 GB at
+  batch 64) ≈ **45-55 GB → use an 80 GB card** (a 48 GB card needs batch 32, which changes the recipe).
+  The fork's fp32 setting (teacher 14.5 + student 8.1 + grads 8.1 + AdamW 16.2 ≈ 47 GB static) does not fit
+  batch 64 even on 80 GB without more freezing.
+- **Recommended short run: 3,000 steps × batch 64 (≈ 0.7 epoch) for each of the two runs**, same seed and data order,
+  checkpoints at 1,500 and 3,000 (`--save-interval 1500`), LR schedule shortened so it actually anneals
+  (`--lr-schedule.warmup-steps 300 --lr-schedule.decay-steps 3000`, peak 2.5e-5 as in the fork's config),
+  bf16 (`--pytorch-training-precision bfloat16`). On 1× H100 80GB: KD run ≈ 1.7-2.2 h, task-only control ≈ 1.1-1.4 h,
+  plus ≈ 1 h setup (uv env, 54 GB LeRobot LIBERO download, teacher conversion, which needs ≈ 30 GB host RAM) ≈ **4-5 GPU-hours total**.
+  The paper-length run (30 k steps) would be ≈ 17-22 h + 11-14 h for the control, ≈ 8× the cost, so it is not needed for a
+  passable effect-of-distillation comparison.
+- Why these choices: the question is *distillation vs no distillation at equal compute*, so both runs share
+  every setting except `loss_weight_teacher`. 3 k steps is enough for a 6-layer student initialized from teacher layers
+  to recover a large part of the gap (it starts from 0% success and 21× the teacher's noise-floor action MSE), while the
+  1.5 k checkpoint gives a second point on the curve at no extra cost. Absolute success will likely stay below
+  the paper's 95% (they train 30 k steps with the attention loss too).
+
+---
+
+# Upstream README (icsl-Jeon/openpi fork of Physical-Intelligence/openpi, unchanged)
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
 

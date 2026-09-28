@@ -1,0 +1,21 @@
+{
+  "model_id": "student_l06_init",
+  "out_dir": "results/phase1/libero/student_l06_init",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "suites": [
+    "libero_spatial",
+    "libero_object",
+    "libero_goal",
+    "libero_10"
+  ],
+  "trials_per_task": 10,
+  "seed": 7,
+  "replan_steps": 5,
+  "resize_size": 224,
+  "num_steps_wait": 10,
+  "workers": 4,
+  "video_dir": null,
+  "init_state_offset": 0,
+  "record_every": 0
+}

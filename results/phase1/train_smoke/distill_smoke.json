@@ -1,0 +1,41 @@
+{
+  "script": "scripts/distill_pytorch.py via scripts/phase1/distill_smoke.sh",
+  "config": "pi05_libero_l06 (teacher pi05_libero 18 layers -> student 6 layers, task + teacher-velocity loss)",
+  "data": "physical-intelligence/libero LeRobot episodes 0-7 (2,197 frames); full set is 1,693 episodes / 273,465 frames",
+  "common_overrides": "bf16 teacher + student, gradient checkpointing on, SigLIP vision tower + projector + tied token embedding frozen",
+  "gpu": "RTX 5080 Laptop 16 GB (about 12.9 GB usable: Windows desktop holds about 3.3 GB)",
+  "memory_unit": "GB = 1e9 bytes, from torch.cuda.memory_stats",
+  "runs": [
+    {
+      "name": "A: full student trainable except vision/embedding (1070.9M trainable incl. 263M unused expert lm_head)",
+      "batch_size": 2,
+      "result": "FAILED at the first AdamW step (forward + teacher forward + backward completed)",
+      "allocated_after_model_creation_gb": 11.59,
+      "peak_allocated_gb": 13.53,
+      "peak_reserved_gb": 13.68,
+      "error": "RuntimeError: CUDA driver error: device not ready (torch/optim/adam.py _multi_tensor_adam, allocating optimizer state; WSL2 reports GPU OOM this way)",
+      "log": "logs/distill_smoke_b2_vlmtrain.log (not committed)"
+    },
+    {
+      "name": "B: VLM backbone also frozen (146.9M trainable: action expert + projections)",
+      "batch_size": 2,
+      "steps": 10,
+      "result": "OK: 10 optimizer steps + checkpoint save (model.safetensors 4.1 GB, optimizer.pt 0.76 GB, norm stats); checkpoint reloads with create_trained_policy and infers (10, 7) chunks",
+      "step_time_s_steady": 0.7,
+      "first_step_s": 18.8,
+      "peak_allocated_gb": 13.27,
+      "peak_reserved_gb": 13.39,
+      "loss_first_10": [1.1697, 0.5464, 2.4015, 0.641, 0.2641, 1.1945, 0.6005, 1.1265, 1.0393, 0.9379]
+    },
+    {
+      "name": "C: as B, batch 8",
+      "batch_size": 8,
+      "steps": 20,
+      "result": "OK",
+      "step_time_s_steady": 2.3,
+      "seconds_per_sample": 0.29,
+      "peak_allocated_gb": 14.98,
+      "peak_reserved_gb": 15.21
+    }
+  ]
+}

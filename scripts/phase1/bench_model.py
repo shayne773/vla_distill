@@ -47,6 +47,8 @@ def count_params(model: torch.nn.Module) -> dict:
                                 "paligemma_with_expert.paligemma.model.language_model.norm."),
         "vlm_token_embedding": ("paligemma_with_expert.paligemma.model.language_model.embed_tokens.",
                                 "paligemma_with_expert.paligemma.lm_head."),
+        # The action expert's Gemma lm_head (vocab x 1024) is never used by pi0/pi0.5; count it separately.
+        "unused_expert_lm_head": ("paligemma_with_expert.gemma_expert.lm_head.",),
         "action_expert": ("paligemma_with_expert.gemma_expert.", "action_in_proj.", "action_out_proj.",
                           "time_mlp_in.", "time_mlp_out.", "state_proj.", "action_time_mlp_in.",
                           "action_time_mlp_out."),
@@ -67,6 +69,7 @@ def count_params(model: torch.nn.Module) -> dict:
     counts["other"] = other
     counts["total"] = sum(counts.values())
     counts["vlm_backbone_total"] = counts["vlm_backbone_layers"] + counts["vlm_token_embedding"]
+    counts["total_used_at_inference"] = counts["total"] - counts["unused_expert_lm_head"]
     return counts
 
 
@@ -155,6 +158,7 @@ def main(args: Args) -> None:
         e2e.append((time.perf_counter() - t) * 1000)
 
     lat, e2e = np.array(lat), np.array(e2e)
+    dynamo_stats = {k: dict(v) for k, v in torch._dynamo.utils.counters.items() if k in ("stats", "graph_break")}
     result = {
         "model_id": args.model_id,
         "config": args.config,
@@ -182,6 +186,7 @@ def main(args: Args) -> None:
             "peak_reserved_inference": int(peak_reserved),
         },
         "params": params,
+        "torch_compile_counters": dynamo_stats,
         "env": env_info(),
         "latency_samples_ms": [round(x, 3) for x in lat.tolist()],
     }

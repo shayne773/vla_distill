@@ -33,6 +33,9 @@ class Args:
     reference: str | None = None  # teacher actions npz; defaults to this run's own actions (zero reference)
     out_dir: str = "results/phase1/action_agreement"
     num_denoise_steps: int = 10
+    # Added to every frame's noise seed. 0 for all model comparisons; a nonzero offset on the teacher gives the
+    # teacher-vs-teacher sampling-noise floor (how much the teacher's own chunks vary with different noise).
+    noise_seed_offset: int = 0
 
 
 def frames_digest(d) -> str:
@@ -59,7 +62,7 @@ def main(args: Args) -> None:
             "observation/state": d["state"][i],
             "prompt": str(d["prompt"][i]),
         }
-        noise = np.random.default_rng(int(d["noise_seed"][i])).standard_normal((horizon, dim)).astype(np.float32)
+        noise = np.random.default_rng(int(d["noise_seed"][i]) + args.noise_seed_offset).standard_normal((horizon, dim)).astype(np.float32)
         actions.append(np.asarray(policy.infer(obs, noise=noise)["actions"], dtype=np.float32))
     actions = np.stack(actions)  # (N, horizon, 7)
 
@@ -87,6 +90,7 @@ def main(args: Args) -> None:
         "num_frames": int(n),
         "frames_sha256": digest,
         "num_denoise_steps": args.num_denoise_steps,
+        "noise_seed_offset": args.noise_seed_offset,
         "mse_chunk_mean": float(per_frame.mean()),
         "mse_chunk_ci95_bootstrap": [float(np.percentile(boot, 2.5)), float(np.percentile(boot, 97.5))],
         "mse_chunk_median": float(np.median(per_frame)),

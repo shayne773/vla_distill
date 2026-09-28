@@ -119,16 +119,17 @@ def main(args: Args) -> None:
         "",
         "Parameter counts:",
         "",
-        "| Model | Total | Vision encoder (SigLIP + projector) | VLM backbone layers | VLM token embedding (tied) | Action expert (+ projections) |",
-        "|---|---|---|---|---|---|",
+        "| Model | Total | Used at inference | Vision encoder (SigLIP + projector) | VLM backbone layers | VLM token embedding (tied) | Action expert (+ projections) | Unused expert lm_head |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for m, b in benches.items():
         if b is None:
             continue
         p = b["params"]
         lines.append(
-            f"| {m} | {_m(p['total'])} | {_m(p['vision_encoder'])} | {_m(p['vlm_backbone_layers'])} | "
-            f"{_m(p['vlm_token_embedding'])} | {_m(p['action_expert'])} |"
+            f"| {m} | {_m(p['total'])} | {_m(p['total_used_at_inference'])} | {_m(p['vision_encoder'])} | "
+            f"{_m(p['vlm_backbone_layers'])} | {_m(p['vlm_token_embedding'])} | {_m(p['action_expert'])} | "
+            f"{_m(p['unused_expert_lm_head'])} |"
         )
 
     lines += [
@@ -138,7 +139,9 @@ def main(args: Args) -> None:
         "| Model | Frames | Chunk MSE (mean [bootstrap 95% CI]) | First-action MSE | Gripper sign agreement | spatial | object | goal | libero_10 |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
-    for m in args.models:
+    # Listed models first, then supplementary runs (e.g. teacher with other noise seeds = sampling-noise floor).
+    extra = sorted(p.stem for p in (root / "action_agreement").glob("*.json") if p.stem not in args.models)
+    for m in [*args.models, *extra]:
         a = _load(root / "action_agreement" / f"{m}.json")
         if a is None:
             lines.append(f"| {m} | not run | | | | | | | |")

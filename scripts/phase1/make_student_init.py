@@ -47,7 +47,6 @@ def main(args: Args) -> None:
     init_sd, mapping = layer_mapping.map_teacher_layers(
         init_sd, teacher_sd, teacher_cfg.gemma_depth, student_cfg.gemma_depth
     )
-    # Tied / derived buffers that are absent from the teacher file keep the freshly-initialized values.
     result = student.load_state_dict(init_sd, strict=False)
     print(f"layer mapping (student <- teacher): {mapping}")
     # embed_tokens is tied to lm_head (safetensors stores it once, as lm_head), so it is filled via lm_head.
