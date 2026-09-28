@@ -1,0 +1,5 @@
+benchmark_root: /home/shayn/.treehouse/vla_distill-b48ccb/1/vla_distill/third_party/libero/libero/libero
+bddl_files: /home/shayn/.treehouse/vla_distill-b48ccb/1/vla_distill/third_party/libero/libero/libero/bddl_files
+init_states: /home/shayn/.treehouse/vla_distill-b48ccb/1/vla_distill/third_party/libero/libero/libero/init_files
+datasets: /home/shayn/.treehouse/vla_distill-b48ccb/1/vla_distill/third_party/libero/libero/libero/../datasets
+assets: /home/shayn/.treehouse/vla_distill-b48ccb/1/vla_distill/third_party/libero/libero/libero/assets
