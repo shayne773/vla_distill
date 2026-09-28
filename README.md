@@ -53,6 +53,40 @@ Model identities used in `results/`: `teacher_l18` (config `pi05_libero`), `stud
 `student_l06_kd` (config `pi05_libero_l06`: task + teacher-velocity loss) and `student_l06_taskonly`
 (config `pi05_libero_l06_taskonly`: identical but `loss_weight_teacher=0`).
 
+## Tests and CI
+
+CI runs only `pre-commit` (uv-lock, ruff, ruff-format; `.github/workflows/pre-commit.yml`). The upstream
+`Test` workflow was removed: it required Physical Intelligence's self-hosted `openpi-verylarge` runner,
+which this repository does not have, so it could never start. The test suite runs locally instead:
+
+```bash
+source scripts/phase1/env.sh
+# 1) everything except the one video-decoding test (JAX on CPU so tests don't depend on the GPU)
+JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES="" .venv/bin/python -m pytest --strict-markers -m "not manual" \
+  --deselect src/openpi/training/data_loader_test.py::test_with_real_dataset
+# 2) the video-decoding test, with FFmpeg 4-7 shared libraries for torchcodec
+#    (one-time: micromamba install -y -n vla-tools -c conda-forge ffmpeg=7)
+LD_LIBRARY_PATH=$MAMBA_ROOT_PREFIX/envs/vla-tools/lib JAX_PLATFORMS=cpu CUDA_VISIBLE_DEVICES="" \
+  .venv/bin/python -m pytest --strict-markers src/openpi/training/data_loader_test.py::test_with_real_dataset
+uvx pre-commit@4.6.2 run --all-files      # same checks as CI
+```
+
+Prerequisites: the `.venv` from "How to reproduce" (`uv sync` plus the `transformers_replace` copy), the user-local
+toolchain from `scripts/phase1/env.sh`, and network access (some tests download small assets from
+`gs://openpi-assets` and the LeRobot `aloha_sim` dataset from Hugging Face).
+The `LD_LIBRARY_PATH` override is scoped to step 2 only, so the conda libraries never shadow system ones for
+the rest of the suite. Without FFmpeg, `test_with_real_dataset` fails with
+`Could not load libtorchcodec`. 
+
+Observed on the laptop (JAX on CPU, 16 threads, 2026-09-28), roughly **13-20 minutes** for the suite (59 tests, 3 `manual` deselected):
+- Full suite before FFmpeg was installed: 58 passed, 1 failed (`test_with_real_dataset`, libtorchcodec) in 776 s.
+- Step 2 (the video test with FFmpeg): passed in 19 s.
+- **`scripts/train_test.py::test_train[debug]` (upstream JAX training test) segfaulted in some local runs.** It passed
+  in the first full run and in 1 of 2 standalone runs (137 s), and segfaulted (`Fatal Python error: Segmentation fault`
+  inside `scripts/train.py` `ptrain_step`) in the other standalone run and in the step-1 run (1,208 s). It also aborted when the conda lib
+  directory was on `LD_LIBRARY_PATH` for the whole suite. The cause was not investigated; this PR does not modify
+  `scripts/train.py` or `train_test.py`.
+
 ## Experiment log
 
 ### 2026-09-27 — Phase 1: laptop setup, teacher baseline, untrained 6-layer student, training readiness
