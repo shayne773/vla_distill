@@ -41,6 +41,7 @@ import tqdm
 import wandb
 
 import openpi.models.pi0_config
+import openpi.models_pytorch.layer_mapping
 import openpi.models_pytorch.pi0_pytorch
 import openpi.shared.normalize as _normalize
 import openpi.training.config as _config
@@ -489,21 +490,27 @@ def train_loop(config: _config.TrainConfig):
                 skipped_keys.append(k)
 
         # we assume the n layers will be different in this case.
-        if teacher_model_weight_path == config.pytorch_weight_path:
-            l_teacher = teacher_config.gemma_depth
-            l_student = model_cfg.gemma_depth
-            layer_mapping = torch.linspace(0, l_teacher - 1, steps=l_student).round().long().tolist()
-
-            mapping_target_list = [
-                "paligemma_with_expert.gemma_expert.model.layers.",
-                "paligemma_with_expert.paligemma.model.language_model.layers.",
-            ]
-            for s_idx, t_idx in enumerate(layer_mapping):
-                for k in filtered_state_dict:
-                    if k.startswith((f"{mapping_target_list[0]}{s_idx}"), k.startswith(f"{mapping_target_list[1]}{s_idx}")):
-                        filtered_state_dict[k] = state_dict[k.replace(str(s_idx), str(t_idx))]
-                        print(f"mapping teacher {k.replace(str(s_idx), str(t_idx))} -> student {k}")
+        # (vla_distill) The fork's inline mapping only remapped action-expert layers (startswith bug);
+        # use the shared, corrected helper so the VLM backbone is subsampled too, as in the paper.
+        if teacher_model_weight_path == config.pytorch_weight_path and teacher_config.gemma_depth != model_cfg.gemma_depth:
+            filtered_state_dict, layer_mapping = openpi.models_pytorch.layer_mapping.map_teacher_layers(
+                filtered_state_dict, state_dict, teacher_config.gemma_depth, model_cfg.gemma_depth
+            )
+            logging.info(f"Initialized student layers from teacher layers {layer_mapping} (backbone + action expert)")
         missing, unexpected = model_to_load.load_state_dict(filtered_state_dict, strict=False)
+        logging.info(f"Student init: {len(missing)} missing keys, {len(skipped_keys)} teacher keys skipped")
+
+    # (vla_distill) Optionally freeze parts of the student (e.g. the vision tower) to fit a small GPU.
+    if config.pytorch_freeze_prefixes:
+        model_to_freeze = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+        n_frozen = 0
+        for name, param in model_to_freeze.named_parameters():
+            if name.startswith(tuple(config.pytorch_freeze_prefixes)):
+                param.requires_grad_(False)
+                n_frozen += param.numel()
+        logging.info(f"Froze {n_frozen / 1e6:.1f}M params with prefixes {config.pytorch_freeze_prefixes}")
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    logging.info(f"Trainable params: {sum(p.numel() for p in trainable) / 1e6:.1f}M")
 
     # Optimizer + learning rate schedule from config
     warmup_steps = config.lr_schedule.warmup_steps
@@ -513,7 +520,7 @@ def train_loop(config: _config.TrainConfig):
 
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        model.parameters(),
+        trainable,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -593,7 +600,7 @@ def train_loop(config: _config.TrainConfig):
                 log_memory_usage(device, global_step, "after_backward")
 
             # Gradient clipping
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config.optimizer.clip_gradient_norm)
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable, max_norm=config.optimizer.clip_gradient_norm)
 
             # Optimizer step
             optim.step()

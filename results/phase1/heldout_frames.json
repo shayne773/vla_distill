@@ -1,0 +1,11 @@
+{
+  "num_frames": 457,
+  "frames_sha256": "f4384abc764112e8118cf94ba1197976bd6d857a0ee16e78dd7c89fdfafbe33e",
+  "per_suite": {
+    "libero_10": 208,
+    "libero_goal": 75,
+    "libero_object": 99,
+    "libero_spatial": 75
+  },
+  "source": "teacher_l18 rollouts, init state 40 of each task, every 3rd query"
+}

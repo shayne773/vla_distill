@@ -462,9 +462,15 @@ class PI0Pytorch(nn.Module):
 
 
     @torch.no_grad()
-    def eval_model(self, observation, actions, noise, time) -> Tensor:
-        """Do a full training forward pass and compute the loss (batch_size x num_steps x num_motors)"""
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=True)
+    def eval_model(self, observation, actions, noise, time, preprocessed=None) -> Tensor:
+        """Predict the flow velocity v_t at (x_t, time) with a training-style forward pass (no loss).
+
+        `preprocessed` optionally passes the student's already-augmented inputs so that teacher and
+        student see the same augmented images (the fork re-ran the random augmentation per model).
+        """
+        if preprocessed is None:
+            preprocessed = self._preprocess_observation(observation, train=True)
+        images, img_masks, lang_tokens, lang_masks, state = preprocessed
 
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
@@ -532,8 +538,17 @@ class DistilledPI0Pytorch(PI0Pytorch):
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
 
-        with torch.no_grad():
-            v_t_teacher = teacher.eval_model(observation, actions, noise, time)
+        # Skip the teacher entirely when its loss weight is 0 (task-loss-only control run).
+        v_t_teacher = None
+        if self.config.loss_weight_teacher > 0:
+            with torch.no_grad():
+                v_t_teacher = teacher.eval_model(
+                    observation,
+                    actions,
+                    noise,
+                    time,
+                    preprocessed=(images, img_masks, lang_tokens, lang_masks, state),
+                )
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, time)
@@ -578,8 +593,8 @@ class DistilledPI0Pytorch(PI0Pytorch):
 
         v_t = self._apply_checkpoint(action_out_proj_func, suffix_out)
 
-        loss_output_gt = F.mse_loss(u_t, v_t, reduction="mean")
-        loss_output_teacher = F.mse_loss(v_t_teacher, v_t, reduction="mean")
-
-        return loss_output_gt + loss_output_teacher
+        loss = self.config.loss_weight_gt * F.mse_loss(u_t, v_t, reduction="mean")
+        if v_t_teacher is not None:
+            loss = loss + self.config.loss_weight_teacher * F.mse_loss(v_t_teacher, v_t, reduction="mean")
+        return loss
 

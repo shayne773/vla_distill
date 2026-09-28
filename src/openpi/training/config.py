@@ -89,6 +89,9 @@ class DataConfig:
 
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
+    # (vla_distill) Optional subset of LeRobot episode indices to load (only those files are downloaded).
+    # Used for the laptop distillation smoke test; None = the full dataset.
+    lerobot_episodes: tuple[int, ...] | None = None
 
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
@@ -171,6 +174,9 @@ class DataConfigFactory(abc.ABC):
     assets: AssetsConfig = dataclasses.field(default_factory=AssetsConfig)
     # Base config that will be updated by the factory.
     base_config: tyro.conf.Suppress[DataConfig | None] = None
+    # (vla_distill) Optional subset of LeRobot episode indices to load (only those files are downloaded).
+    # Used for the laptop distillation smoke test; None = the full dataset.
+    lerobot_episodes: tuple[int, ...] | None = None
 
     @abc.abstractmethod
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -185,6 +191,7 @@ class DataConfigFactory(abc.ABC):
             asset_id=asset_id,
             norm_stats=self._load_norm_stats(epath.Path(self.assets.assets_dir or assets_dirs), asset_id),
             use_quantile_norm=model_config.model_type != ModelType.PI0,
+            lerobot_episodes=self.lerobot_episodes,
         )
 
     def _load_norm_stats(self, assets_dir: epath.Path, asset_id: str | None) -> dict[str, _transforms.NormStats] | None:
@@ -485,6 +492,9 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # (vla_distill) State-dict name prefixes of student parameters to freeze in scripts/distill_pytorch.py,
+    # e.g. the SigLIP vision tower, to fit a smoke-test step on a small GPU. Empty = train everything.
+    pytorch_freeze_prefixes: tuple[str, ...] = ()
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
     optimizer: _optimizer.OptimizerConfig = dataclasses.field(default_factory=_optimizer.AdamW)
@@ -779,6 +789,67 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # vla_distill: Pi0.5 Shallow-pi students (18 -> 6 layers in both the VLM backbone and the action expert).
+    # Teacher = `pi05_libero` (the official gs://openpi-assets/checkpoints/pi05_libero weights, converted to
+    # PyTorch). Model identities used in results/: teacher_l18 (pi05_libero), student_l06_init (pi05_libero_l06
+    # architecture, teacher-layer-mapped weights, no training), student_l06_kd (pi05_libero_l06 trained with
+    # task + teacher-velocity loss), student_l06_taskonly (pi05_libero_l06_taskonly, same run without KD loss).
+    #
+    TrainConfig(
+        name="pi05_libero_l06",
+        wandb_enabled=False,
+        model=pi0_config.DistilledPi0Config(
+            teacher_config="pi05_libero",
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            gemma_depth=6,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            # Same normalization stats as the teacher checkpoint.
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_libero/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        # Converted teacher weights; also the source of the layer-mapped student init.
+        pytorch_weight_path="checkpoints/pi05_libero_pytorch",
+        num_train_steps=30_000,
+        batch_size=64,
+        save_interval=10_000,
+        pytorch_training_precision="float32",
+    ),
+    TrainConfig(
+        # Control: identical student and data, but trained on the task (flow-matching) loss only.
+        name="pi05_libero_l06_taskonly",
+        wandb_enabled=False,
+        model=pi0_config.DistilledPi0Config(
+            teacher_config="pi05_libero",
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            gemma_depth=6,
+            loss_weight_teacher=0.0,
+        ),
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            assets=AssetsConfig(
+                assets_dir="gs://openpi-assets/checkpoints/pi05_libero/assets",
+                asset_id="physical-intelligence/libero",
+            ),
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,
+        ),
+        pytorch_weight_path="checkpoints/pi05_libero_pytorch",
+        num_train_steps=30_000,
+        batch_size=64,
+        save_interval=10_000,
+        pytorch_training_precision="float32",
     ),
     #
     # Fine-tuning Aloha configs.
