@@ -62,7 +62,11 @@ def main(args: Args) -> None:
             "observation/state": d["state"][i],
             "prompt": str(d["prompt"][i]),
         }
-        noise = np.random.default_rng(int(d["noise_seed"][i]) + args.noise_seed_offset).standard_normal((horizon, dim)).astype(np.float32)
+        noise = (
+            np.random.default_rng(int(d["noise_seed"][i]) + args.noise_seed_offset)
+            .standard_normal((horizon, dim))
+            .astype(np.float32)
+        )
         actions.append(np.asarray(policy.infer(obs, noise=noise)["actions"], dtype=np.float32))
     actions = np.stack(actions)  # (N, horizon, 7)
 
@@ -97,9 +101,7 @@ def main(args: Args) -> None:
         "mse_first_action_mean": float(first.mean()),
         "mse_per_dim": err.mean(axis=(0, 1)).tolist(),
         "gripper_sign_agreement": gripper_agree,
-        "per_suite_mse": {
-            s: float(per_frame[d["suite"] == s].mean()) for s in sorted(set(d["suite"].tolist()))
-        },
+        "per_suite_mse": {s: float(per_frame[d["suite"] == s].mean()) for s in sorted(set(d["suite"].tolist()))},
         "per_frame_mse": [float(x) for x in per_frame],
     }
     (out / f"{args.model_id}.json").write_text(json.dumps(result, indent=2))

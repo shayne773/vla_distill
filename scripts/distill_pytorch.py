@@ -427,16 +427,13 @@ def train_loop(config: _config.TrainConfig):
         For instance, we can keep distilling from previous weights while having the same teacher model.
     """
 
-    teacher_model_weight_path = config.pytorch_weight_path if \
-        config.pytorch_weight_path_teacher is None \
-            else config.pytorch_weight_path_teacher
-    teacher_model_path = os.path.join(teacher_model_weight_path, "model.safetensors")
-    safetensors.torch.load_model(
-        teacher_model, teacher_model_path, strict=False
+    teacher_model_weight_path = (
+        config.pytorch_weight_path if config.pytorch_weight_path_teacher is None else config.pytorch_weight_path_teacher
     )
+    teacher_model_path = os.path.join(teacher_model_weight_path, "model.safetensors")
+    safetensors.torch.load_model(teacher_model, teacher_model_path, strict=False)
     logging.info(f"Loaded teacher pyTorch weights from {teacher_model_path}")
     teacher_model = teacher_model.eval()
-
 
     if hasattr(model, "gradient_checkpointing_enable"):
         enable_gradient_checkpointing = True
@@ -468,13 +465,12 @@ def train_loop(config: _config.TrainConfig):
             static_graph=world_size >= 8,  # Enable for 8+ GPUs
         )
 
-
     # Load weights from weight_loader if specified (for fine-tuning)
     if config.pytorch_weight_path is not None:
         logging.info(f"Loading weights from: {config.pytorch_weight_path}")
 
         model_to_load = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
-        safetensors_path=config.pytorch_weight_path
+        safetensors_path = config.pytorch_weight_path
         # Load all tensors from the safetensors file
         state_dict = safetensors.torch.load_file(os.path.join(str(safetensors_path), "model.safetensors"), device="cpu")
 
@@ -492,7 +488,10 @@ def train_loop(config: _config.TrainConfig):
         # we assume the n layers will be different in this case.
         # (vla_distill) The fork's inline mapping only remapped action-expert layers (startswith bug);
         # use the shared, corrected helper so the VLM backbone is subsampled too, as in the paper.
-        if teacher_model_weight_path == config.pytorch_weight_path and teacher_config.gemma_depth != model_cfg.gemma_depth:
+        if (
+            teacher_model_weight_path == config.pytorch_weight_path
+            and teacher_config.gemma_depth != model_cfg.gemma_depth
+        ):
             filtered_state_dict, layer_mapping = openpi.models_pytorch.layer_mapping.map_teacher_layers(
                 filtered_state_dict, state_dict, teacher_config.gemma_depth, model_cfg.gemma_depth
             )
@@ -506,7 +505,7 @@ def train_loop(config: _config.TrainConfig):
         n_frozen = 0
         for name, param in model_to_freeze.named_parameters():
             if name.startswith(tuple(config.pytorch_freeze_prefixes)):
-                param.requires_grad_(False)
+                param.requires_grad = False
                 n_frozen += param.numel()
         logging.info(f"Froze {n_frozen / 1e6:.1f}M params with prefixes {config.pytorch_freeze_prefixes}")
     trainable = [p for p in model.parameters() if p.requires_grad]

@@ -41,17 +41,30 @@ class Args:
 
 def count_params(model: torch.nn.Module) -> dict:
     groups = {
-        "vision_encoder": ("paligemma_with_expert.paligemma.model.vision_tower.",
-                           "paligemma_with_expert.paligemma.model.multi_modal_projector."),
-        "vlm_backbone_layers": ("paligemma_with_expert.paligemma.model.language_model.layers.",
-                                "paligemma_with_expert.paligemma.model.language_model.norm."),
-        "vlm_token_embedding": ("paligemma_with_expert.paligemma.model.language_model.embed_tokens.",
-                                "paligemma_with_expert.paligemma.lm_head."),
+        "vision_encoder": (
+            "paligemma_with_expert.paligemma.model.vision_tower.",
+            "paligemma_with_expert.paligemma.model.multi_modal_projector.",
+        ),
+        "vlm_backbone_layers": (
+            "paligemma_with_expert.paligemma.model.language_model.layers.",
+            "paligemma_with_expert.paligemma.model.language_model.norm.",
+        ),
+        "vlm_token_embedding": (
+            "paligemma_with_expert.paligemma.model.language_model.embed_tokens.",
+            "paligemma_with_expert.paligemma.lm_head.",
+        ),
         # The action expert's Gemma lm_head (vocab x 1024) is never used by pi0/pi0.5; count it separately.
         "unused_expert_lm_head": ("paligemma_with_expert.gemma_expert.lm_head.",),
-        "action_expert": ("paligemma_with_expert.gemma_expert.", "action_in_proj.", "action_out_proj.",
-                          "time_mlp_in.", "time_mlp_out.", "state_proj.", "action_time_mlp_in.",
-                          "action_time_mlp_out."),
+        "action_expert": (
+            "paligemma_with_expert.gemma_expert.",
+            "action_in_proj.",
+            "action_out_proj.",
+            "time_mlp_in.",
+            "time_mlp_out.",
+            "state_proj.",
+            "action_time_mlp_in.",
+            "action_time_mlp_out.",
+        ),
     }
     counts = dict.fromkeys(groups, 0)
     other = 0
@@ -94,7 +107,9 @@ def load_obs(frames_path: str) -> dict:
 def env_info() -> dict:
     smi = subprocess.run(
         ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout.strip()
     return {
         "gpu": smi,
@@ -120,9 +135,11 @@ def main(args: Args) -> None:
     mem_after_load = torch.cuda.memory_allocated()
 
     obs = load_obs(args.frames)
-    noise = np.random.default_rng(1234).standard_normal(
-        (train_config.model.action_horizon, train_config.model.action_dim)
-    ).astype(np.float32)
+    noise = (
+        np.random.default_rng(1234)
+        .standard_normal((train_config.model.action_horizon, train_config.model.action_dim))
+        .astype(np.float32)
+    )
 
     # Build the exact model inputs once (same path as Policy.infer) for the model-only timing.
     inputs = policy._input_transform(jax.tree.map(lambda x: x, obs))  # noqa: SLF001
@@ -158,7 +175,7 @@ def main(args: Args) -> None:
         e2e.append((time.perf_counter() - t) * 1000)
 
     lat, e2e = np.array(lat), np.array(e2e)
-    dynamo_stats = {k: dict(v) for k, v in torch._dynamo.utils.counters.items() if k in ("stats", "graph_break")}
+    dynamo_stats = {k: dict(v) for k, v in torch._dynamo.utils.counters.items() if k in ("stats", "graph_break")}  # noqa: SLF001
     result = {
         "model_id": args.model_id,
         "config": args.config,
@@ -178,7 +195,11 @@ def main(args: Args) -> None:
             "min": float(lat.min()),
             "max": float(lat.max()),
         },
-        "policy_infer_e2e_ms": {"p50": float(np.percentile(e2e, 50)), "p95": float(np.percentile(e2e, 95)), "n": int(len(e2e))},
+        "policy_infer_e2e_ms": {
+            "p50": float(np.percentile(e2e, 50)),
+            "p95": float(np.percentile(e2e, 95)),
+            "n": int(len(e2e)),
+        },
         "gpu_memory_bytes": {
             "weights": int(weights_bytes),
             "allocated_after_load": int(mem_after_load),

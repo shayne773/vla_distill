@@ -30,7 +30,7 @@ import numpy as np
 import tyro
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
-import libero_summary  # noqa: E402
+import libero_summary
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256
@@ -136,10 +136,18 @@ def run_task(unit):
                         "noise_seed": noise_seed(args.seed, suite_idx, task_id, episode_idx, query_idx),
                     }
                     if args.record_every and query_idx % args.record_every == 0:
-                        for k, v in (("image", img), ("wrist_image", wrist), ("state", element["observation/state"]),
-                                     ("prompt", element["prompt"]), ("noise_seed", element["noise_seed"]),
-                                     ("suite", suite), ("task_id", task_id), ("init_state_idx", episode_idx),
-                                     ("query_idx", query_idx), ("env_step", t - args.num_steps_wait)):
+                        for k, v in (
+                            ("image", img),
+                            ("wrist_image", wrist),
+                            ("state", element["observation/state"]),
+                            ("prompt", element["prompt"]),
+                            ("noise_seed", element["noise_seed"]),
+                            ("suite", suite),
+                            ("task_id", task_id),
+                            ("init_state_idx", episode_idx),
+                            ("query_idx", query_idx),
+                            ("env_step", t - args.num_steps_wait),
+                        ):
                             recorded[k].append(v)
                     result = client.infer(element)
                     query_idx += 1
@@ -152,7 +160,7 @@ def run_task(unit):
                 if done:
                     break
                 t += 1
-            except Exception as e:  # noqa: BLE001 - mirror main.py: an exception ends the episode as a failure
+            except Exception as e:  # mirror main.py: an exception ends the episode as a failure
                 error = repr(e)
                 logging.exception("episode error")
                 break
@@ -204,10 +212,14 @@ def main(args: Args) -> None:
     units = []
     # Longest suites first for better load balancing across workers.
     for suite in sorted(args.suites, key=lambda s: -MAX_STEPS[s]):
-        for task_id in range(bench[suite]().n_tasks):
-            if not task_file(args.out_dir, suite, task_id).exists():
-                units.append((args, suite, task_id))
-    logging.info("%d tasks to run (%d already done)", len(units), sum(bench[s]().n_tasks for s in args.suites) - len(units))
+        units.extend(
+            (args, suite, task_id)
+            for task_id in range(bench[suite]().n_tasks)
+            if not task_file(args.out_dir, suite, task_id).exists()
+        )
+    logging.info(
+        "%d tasks to run (%d already done)", len(units), sum(bench[s]().n_tasks for s in args.suites) - len(units)
+    )
     ctx = mp.get_context("spawn")
     with ctx.Pool(args.workers, maxtasksperchild=1) as pool:
         for suite, task_id, n_succ in pool.imap_unordered(run_task, units):

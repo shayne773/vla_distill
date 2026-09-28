@@ -1,6 +1,6 @@
 """Render results/phase1/SUMMARY.md from the raw JSON results of every evaluated model.
 
-    uv run scripts/phase1/make_summary.py --models teacher_l18 student_l06_init
+uv run scripts/phase1/make_summary.py --models teacher_l18 student_l06_init
 """
 
 import dataclasses
@@ -38,6 +38,7 @@ def _m(x):
 
 def _paired(ref_dir: pathlib.Path, dir_: pathlib.Path):
     """Paired comparison on identical (suite, task, init state): discordant counts + exact McNemar p-value."""
+
     def load(d):
         out = {}
         for f in (d / "episodes").glob("*.json"):
@@ -50,7 +51,7 @@ def _paired(ref_dir: pathlib.Path, dir_: pathlib.Path):
     only_ref = sum(1 for k in keys if a[k] and not b[k])
     only_new = sum(1 for k in keys if b[k] and not a[k])
     n = only_ref + only_new
-    p = min(1.0, 2 * sum(math.comb(n, i) for i in range(0, min(only_ref, only_new) + 1)) / 2**n) if n else 1.0
+    p = min(1.0, 2 * sum(math.comb(n, i) for i in range(min(only_ref, only_new) + 1)) / 2**n) if n else 1.0
     return {"pairs": len(keys), "ref_only_success": only_ref, "model_only_success": only_new, "mcnemar_exact_p": p}
 
 

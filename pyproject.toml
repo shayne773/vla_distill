@@ -130,6 +130,10 @@ unfixable = [
     "B905", # Fix defaults to strict=False, which is not what we want.
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# vla_distill: the LIBERO sim client runs in the Python 3.8 venv (examples/libero/.venv), so keep typing.List/Optional.
+"scripts/phase1/libero_eval.py" = ["UP006", "UP007", "UP035"]
+
 [tool.ruff.lint.isort]
 force-single-line = true
 force-sort-within-sections = true

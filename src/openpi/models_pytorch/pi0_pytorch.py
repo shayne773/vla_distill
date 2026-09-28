@@ -460,7 +460,6 @@ class PI0Pytorch(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
-
     @torch.no_grad()
     def eval_model(self, observation, actions, noise, time, preprocessed=None) -> Tensor:
         """Predict the flow velocity v_t at (x_t, time) with a training-style forward pass (no loss).
@@ -533,7 +532,6 @@ class DistilledPI0Pytorch(PI0Pytorch):
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
-
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
         u_t = noise - actions
@@ -597,4 +595,3 @@ class DistilledPI0Pytorch(PI0Pytorch):
         if v_t_teacher is not None:
             loss = loss + self.config.loss_weight_teacher * F.mse_loss(v_t_teacher, v_t, reduction="mean")
         return loss
-

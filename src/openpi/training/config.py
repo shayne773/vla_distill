@@ -754,16 +754,13 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_libero_l06",
         wandb_enabled=False,
-        model=pi0_config.DistilledPi0Config(
-            teacher_config="pi0_libero",
-            gemma_depth=6
-        ),
+        model=pi0_config.DistilledPi0Config(teacher_config="pi0_libero", gemma_depth=6),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
             extra_delta_transform=True,
         ),
-        pytorch_weight_path="path/to/pi0_libero", # change this path for your pi0_libero torch weights
+        pytorch_weight_path="path/to/pi0_libero",  # change this path for your pi0_libero torch weights
         num_train_steps=30_000,
         batch_size=64,
         save_interval=10_000,

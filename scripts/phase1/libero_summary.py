@@ -50,7 +50,9 @@ def summarize_dir(out_dir, expected_trials=None, suites=None):
     summary["overall"] = _rate(sum(e["success"] for e in all_eps), len(all_eps))
     if expected_trials is not None:
         summary["complete"] = all(
-            summary["per_task"][s][t]["n"] == expected_trials for s in summary["per_task"] for t in summary["per_task"][s]
+            summary["per_task"][s][t]["n"] == expected_trials
+            for s in summary["per_task"]
+            for t in summary["per_task"][s]
         ) and all(len(summary["per_task"][s]) == 10 for s in summary["per_task"])
     return summary
 
