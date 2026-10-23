@@ -147,7 +147,29 @@ def get_model_parameters(model):
     )
 
 
-def save_checkpoint(model, optimizer, global_step, config, is_main, data_config):
+def init_fp32_master_weights(params):
+    """(vla_distill) fp32 copies of `params`, for the optimizer to update instead of the (bf16) parameters."""
+    return [p.detach().clone().float() for p in params]
+
+
+def fp32_master_weight_step(optimizer, params, master_params):
+    """(vla_distill) One optimizer step on fp32 master weights, rounded back into the (bf16) parameters.
+
+    Pure-bf16 AdamW drops every update smaller than half a bf16 ulp of the weight; the masters accumulate them.
+    """
+    for p, mp in zip(params, master_params, strict=True):
+        mp.grad = None if p.grad is None else p.grad.float()
+        p.grad = None
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    # Per tensor, not torch._foreach_copy_: on CUDA (torch 2.7.1) that writes garbage into the fp32 entries of a
+    # list mixing bf16 and fp32 destinations.
+    with torch.no_grad():
+        for p, mp in zip(params, master_params, strict=True):
+            p.copy_(mp)
+
+
+def save_checkpoint(model, optimizer, global_step, config, is_main, data_config, master_params=None):
     """Save a checkpoint with model state, optimizer state, and metadata."""
     if not is_main:
         return
@@ -169,6 +191,9 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
 
         # Save optimizer state using PyTorch format
         torch.save(optimizer.state_dict(), tmp_ckpt_dir / "optimizer.pt")
+        # (vla_distill) fp32 master weights (only for --resume; model.safetensors keeps the bf16 weights used for eval)
+        if master_params is not None:
+            torch.save([p.detach().cpu() for p in master_params], tmp_ckpt_dir / "master_params.pt")
 
         # Save training metadata (avoid saving full config to prevent JAX/Flax compatibility issues)
         metadata = {
@@ -195,7 +220,7 @@ def save_checkpoint(model, optimizer, global_step, config, is_main, data_config)
             wandb.log({"checkpoint_step": global_step}, step=global_step)
 
 
-def load_checkpoint(model, optimizer, checkpoint_dir, device):
+def load_checkpoint(model, optimizer, checkpoint_dir, device, trainable=None, master_params=None):
     """Load the latest checkpoint and return the global step."""
     checkpoint_steps = [
         int(d.name)
@@ -243,6 +268,19 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
 
         optimizer.load_state_dict(optimizer_state_dict)
         del optimizer_state_dict
+
+        # (vla_distill) Re-sync the fp32 master weights: from master_params.pt if saved, else from the bf16 weights.
+        if master_params is not None:
+            master_path = ckpt_dir / "master_params.pt"
+            if master_path.exists():
+                saved = torch.load(master_path, map_location=device, weights_only=True)
+            else:
+                logging.warning(f"No {master_path}; re-initializing fp32 master weights from the bf16 model weights")
+                saved = [p.detach() for p in trainable]
+            with torch.no_grad():
+                for mp, sp in zip(master_params, saved, strict=True):
+                    mp.copy_(sp)
+            del saved
         torch.cuda.empty_cache()
         gc.collect()
         log_memory_usage(device, latest_step, "after_loading_optimizer")
@@ -517,9 +555,19 @@ def train_loop(config: _config.TrainConfig):
     decay_steps = config.lr_schedule.decay_steps
     end_lr = config.lr_schedule.decay_lr
 
+    # (vla_distill) fp32 master weights: AdamW updates an fp32 copy of each trainable bf16 parameter (fp32 moments
+    # too), which is rounded back into the bf16 weight after every step. Pure-bf16 AdamW (the openpi default) drops
+    # any update smaller than half a bf16 ulp: at peak LR 2.5e-5 that is every weight with |w| >= 2^-7, and in the
+    # phase-2 runs 81% of the transformer weights stayed bit-identical to init. Parameters that never get a gradient
+    # (e.g. the unused expert lm_head) should be frozen, or their master copy is wasted memory.
+    master_params = None
+    if config.pytorch_fp32_master_weights and config.pytorch_training_precision == "bfloat16":
+        master_params = init_fp32_master_weights(trainable)
+        logging.info(f"fp32 master weights for {sum(p.numel() for p in master_params) / 1e6:.1f}M trainable params")
+
     # Create optimizer with config parameters
     optim = torch.optim.AdamW(
-        trainable,
+        master_params if master_params is not None else trainable,
         lr=peak_lr,
         betas=(config.optimizer.b1, config.optimizer.b2),
         eps=config.optimizer.eps,
@@ -529,7 +577,7 @@ def train_loop(config: _config.TrainConfig):
     # Load checkpoint if resuming
     global_step = 0
     if resuming:
-        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device)
+        global_step = load_checkpoint(model, optim, config.checkpoint_dir, device, trainable, master_params)
         logging.info(f"Resumed training from step {global_step}")
 
     def lr_schedule(step: int):
@@ -602,8 +650,11 @@ def train_loop(config: _config.TrainConfig):
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable, max_norm=config.optimizer.clip_gradient_norm)
 
             # Optimizer step
-            optim.step()
-            optim.zero_grad(set_to_none=True)
+            if master_params is not None:
+                fp32_master_weight_step(optim, trainable, master_params)
+            else:
+                optim.step()
+                optim.zero_grad(set_to_none=True)
 
             # Clear gradients more aggressively
             for param in model.parameters():
@@ -658,7 +709,7 @@ def train_loop(config: _config.TrainConfig):
 
             global_step += 1
             # Save checkpoint using the new mechanism
-            save_checkpoint(model, optim, global_step, config, is_main, data_config)
+            save_checkpoint(model, optim, global_step, config, is_main, data_config, master_params)
 
             # Update progress bar
             if pbar is not None:

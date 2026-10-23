@@ -181,7 +181,13 @@ the success evaluation), every 3rd query, sha256 in `results/phase1/heldout_fram
   10 wait steps, replan every 5 actions, same per-suite max steps). Each task is self-seeded so tasks run in
   4 parallel workers, and every policy query carries a deterministic noise seed.
 - *Precision.* All inference is bf16 (openpi's default conversion). The fork's `pi0_libero_l06` config trains
-  in fp32; the laptop smoke test uses bf16 (an fp32 teacher alone is 14.5 GB).
+  in fp32; the laptop smoke test uses bf16 (an fp32 teacher alone is 14.5 GB). Correction after phase 2: openpi's
+  PyTorch `--pytorch-training-precision bfloat16` is *pure* bf16, so the master weights and AdamW moments are bf16
+  too ("Mixed precision is not yet supported", upstream "Precision Settings" below). Every AdamW update smaller
+  than half a bf16 ulp of its weight rounds away: at LR 2.5e-5 that is every weight with |w| ≥ 2^-7, and the
+  phase-2 runs left 81.5% of the student's used transformer weights bit-identical to the init. Train in bf16 only with
+  fp32 master weights (`pytorch_fp32_master_weights`, on in both `pi05_libero_l06*` configs: fp32 masters and AdamW
+  state in `scripts/distill_pytorch.py`, bf16 forward/backward).
 - *Latency is laptop latency.* The paper's 25.5 ms (teacher) / 11.3 ms (L6) are on a data-center GPU. Here the
   GPU is a 92 W laptop part shared with the Windows desktop (about 3.3 GB VRAM and some compute are always in use),
   running upstream's `torch.compile(mode="max-autotune")` with eager attention (3 graphs, a few graph breaks
@@ -224,7 +230,10 @@ the success evaluation), every 3rd query, sha256 in `results/phase1/heldout_fram
 - **Recommended short run: 3,000 steps × batch 64 (≈ 0.7 epoch) for each of the two runs**, same seed and data order,
   checkpoints at 1,500 and 3,000 (`--save-interval 1500`), LR schedule shortened so it actually anneals
   (`--lr-schedule.warmup-steps 300 --lr-schedule.decay-steps 3000`, peak 2.5e-5 as in the fork's config),
-  bf16 (`--pytorch-training-precision bfloat16`). On 1× H100 80GB: KD run ≈ 1.7-2.2 h, task-only control ≈ 1.1-1.4 h,
+  bf16 compute with fp32 master weights (`--pytorch-training-precision bfloat16` plus the configs'
+  `pytorch_fp32_master_weights=True`; corrected after phase 2, which ran pure bf16 and left most weights untrained,
+  see *Precision* above). The masters cost 8 more bytes per trainable parameter than the bf16 estimate above
+  (an fp32 copy, and fp32 instead of bf16 AdamW moments). On 1× H100 80GB: KD run ≈ 1.7-2.2 h, task-only control ≈ 1.1-1.4 h,
   plus ≈ 1 h setup (uv env, 54 GB LeRobot LIBERO download, teacher conversion, which needs ≈ 30 GB host RAM) ≈ **4-5 GPU-hours total**.
   The paper-length run (30 k steps) would be ≈ 17-22 h + 11-14 h for the control, ≈ 8× the cost, so it is not needed for a
   passable effect-of-distillation comparison.
