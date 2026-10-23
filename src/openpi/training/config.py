@@ -492,6 +492,11 @@ class TrainConfig:
 
     # Precision for PyTorch training.
     pytorch_training_precision: Literal["bfloat16", "float32"] = "bfloat16"
+    # (vla_distill) With bfloat16 training, keep an fp32 master copy of every trainable parameter (and fp32 AdamW
+    # state) in scripts/distill_pytorch.py; forward/backward still run on the bf16 weights. Without it, an AdamW
+    # step smaller than half a bf16 ulp of the weight (|update| < ~|w|/256, i.e. most weights at LR 2.5e-5) rounds
+    # back to the old value and is lost. Costs 8 extra bytes per trainable parameter.
+    pytorch_fp32_master_weights: bool = False
     # (vla_distill) State-dict name prefixes of student parameters to freeze in scripts/distill_pytorch.py,
     # e.g. the SigLIP vision tower, to fit a smoke-test step on a small GPU. Empty = train everything.
     pytorch_freeze_prefixes: tuple[str, ...] = ()
@@ -820,6 +825,7 @@ _CONFIGS = [
         batch_size=64,
         save_interval=10_000,
         pytorch_training_precision="float32",
+        pytorch_fp32_master_weights=True,
     ),
     TrainConfig(
         # Control: identical student and data, but trained on the task (flow-matching) loss only.
@@ -847,6 +853,7 @@ _CONFIGS = [
         batch_size=64,
         save_interval=10_000,
         pytorch_training_precision="float32",
+        pytorch_fp32_master_weights=True,
     ),
     #
     # Fine-tuning Aloha configs.
