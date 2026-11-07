@@ -498,7 +498,8 @@ class TrainConfig:
     # back to the old value and is lost. Costs 8 extra bytes per trainable parameter.
     pytorch_fp32_master_weights: bool = False
     # (vla_distill) State-dict name prefixes of student parameters to freeze in scripts/distill_pytorch.py,
-    # e.g. the SigLIP vision tower, to fit a smoke-test step on a small GPU. Empty = train everything.
+    # e.g. the SigLIP vision tower, to fit a smoke-test step on a small GPU. Empty = train everything. The
+    # pi05_libero_l06* configs default to PI05_L06_FREEZE_PREFIXES (below).
     pytorch_freeze_prefixes: tuple[str, ...] = ()
 
     lr_schedule: _optimizer.LRScheduleConfig = dataclasses.field(default_factory=_optimizer.CosineDecaySchedule)
@@ -571,6 +572,27 @@ class TrainConfig:
         if self.resume and self.overwrite:
             raise ValueError("Cannot resume and overwrite at the same time.")
 
+
+# (vla_distill) Default pytorch_freeze_prefixes of the 6-layer Pi0.5 students (pi05_libero_l06*). The first four
+# are runbook 1's phase-2 list (SigLIP vision tower, projector, token embedding, VLM lm_head). The other
+# six never receive a gradient, because the action expert reads only each VLM layer's K/V: the expert's unused
+# lm_head, the final VLM norm, and the last VLM layer's MLP, q/o projections and post-attention norm. "layers.5." is
+# the LAST VLM layer of the 6-layer student only; another depth needs another index. Same list as runbook 2's FREEZE
+# (docs/reports/phase2-rerun-runbook.zh-TW.md); a --pytorch-freeze-prefixes CLI override replaces it entirely.
+_L06_PG = "paligemma_with_expert.paligemma"
+_L06_LM = f"{_L06_PG}.model.language_model"
+PI05_L06_FREEZE_PREFIXES: tuple[str, ...] = (
+    f"{_L06_PG}.model.vision_tower.",
+    f"{_L06_PG}.model.multi_modal_projector.",
+    f"{_L06_LM}.embed_tokens.",
+    f"{_L06_PG}.lm_head.",
+    "paligemma_with_expert.gemma_expert.lm_head.",
+    f"{_L06_LM}.norm.",
+    f"{_L06_LM}.layers.5.mlp.",
+    f"{_L06_LM}.layers.5.self_attn.q_proj.",
+    f"{_L06_LM}.layers.5.self_attn.o_proj.",
+    f"{_L06_LM}.layers.5.post_attention_layernorm.",
+)
 
 # Use `get_config` if you need to get a config by name in your code.
 _CONFIGS = [
@@ -826,6 +848,7 @@ _CONFIGS = [
         save_interval=10_000,
         pytorch_training_precision="float32",
         pytorch_fp32_master_weights=True,
+        pytorch_freeze_prefixes=PI05_L06_FREEZE_PREFIXES,
     ),
     TrainConfig(
         # Control: identical student and data, but trained on the task (flow-matching) loss only.
@@ -854,6 +877,7 @@ _CONFIGS = [
         save_interval=10_000,
         pytorch_training_precision="float32",
         pytorch_fp32_master_weights=True,
+        pytorch_freeze_prefixes=PI05_L06_FREEZE_PREFIXES,
     ),
     #
     # Fine-tuning Aloha configs.

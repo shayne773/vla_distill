@@ -187,7 +187,11 @@ the success evaluation), every 3rd query, sha256 in `results/phase1/heldout_fram
   than half a bf16 ulp of its weight rounds away: at LR 2.5e-5 that is every weight with |w| ≥ 2^-7, and the
   phase-2 runs left 81.5% of the student's used transformer weights bit-identical to the init. Train in bf16 only with
   fp32 master weights (`pytorch_fp32_master_weights`, on in both `pi05_libero_l06*` configs: fp32 masters and AdamW
-  state in `scripts/distill_pytorch.py`, bf16 forward/backward).
+  state in `scripts/distill_pytorch.py`, bf16 forward/backward). Check that the fix is active with
+  `python -I scripts/gate_check.py INIT.safetensors CHECKPOINT.safetensors` (fraction of action-expert layer weights
+  with |w| ≥ 2^-6 that changed from the init; PASS at ≥ 0.25, 0.0000 under pure bf16). Both configs also freeze, by
+  default, the parameters that never get a gradient (`PI05_L06_FREEZE_PREFIXES` in `src/openpi/training/config.py`).
+  Diagnosis and rerun: `docs/reports/phase2-student-diagnosis.md`, `phase2-rerun-runbook.zh-TW.md`, `phase2-rerun-dry-run.md`.
 - *Latency is laptop latency.* The paper's 25.5 ms (teacher) / 11.3 ms (L6) are on a data-center GPU. Here the
   GPU is a 92 W laptop part shared with the Windows desktop (about 3.3 GB VRAM and some compute are always in use),
   running upstream's `torch.compile(mode="max-autotune")` with eager attention (3 graphs, a few graph breaks
